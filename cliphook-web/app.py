@@ -168,17 +168,40 @@ def fetch_transcript(video_id: str):
 
 
 def parse_manual_transcript(raw: str):
-    """Transkrip manual: baris '[mm:ss] teks' atau '00:12 teks'. Tanpa timestamp -> dipakai apa adanya."""
-    items = []
+    """Parser transkrip manual. Mendukung beberapa format hasil salinan:
+    1) '0.070 detik teks'  (format M.SS + menit diulang, hasil salin dari HP/YouTube versi tertentu)
+    2) '[mm:ss] teks' atau '00:12 teks'
+    3) timestamp '0:12' di baris sendiri, teks di baris berikutnya (format desktop YouTube)
+    4) teks polos tanpa timestamp
+    """
+    pat_detik = re.compile(r"^(\d+)\.(\d{2})\d*\s*detik\s*(.*)$", re.IGNORECASE)
+    pat_clock = re.compile(r"^\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*(.*)$")
+    items, last, pending = [], 0.0, None
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
-        m = re.match(r"^\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s*(.*)$", line)
+        m = pat_detik.match(line)
         if m:
-            items.append({"text": m.group(2), "start": float(to_seconds(m.group(1))), "duration": 0.0})
+            start = int(m.group(1)) * 60 + int(m.group(2))
+            text = m.group(3).strip()
+            pending = None
         else:
-            items.append({"text": line, "start": items[-1]["start"] if items else 0.0, "duration": 0.0})
+            m = pat_clock.match(line)
+            if m:
+                start = to_seconds(m.group(1))
+                text = m.group(2).strip()
+                if not text:  # timestamp di baris sendiri
+                    pending = float(start)
+                    continue
+                pending = None
+            else:
+                start = pending if pending is not None else last
+                text = line
+                pending = None
+        if text:
+            last = float(start)
+            items.append({"text": text, "start": last, "duration": 0.0})
     return items
 
 
@@ -243,6 +266,8 @@ def call_gemini(api_key: str, model: str, transcript_text: str, extra: str) -> d
     )
     raw = (resp.text or "").strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
+    if "{" in raw and "}" in raw:
+        raw = raw[raw.index("{"): raw.rindex("}") + 1]
     return json.loads(raw)
 
 
